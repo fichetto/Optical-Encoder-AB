@@ -250,14 +250,16 @@ void sensorTask(void *pvParameters) {
     vTaskDelete(NULL);
   }
   
-  // Contatori per diagnostica qualità sensore
+  // Contatori per diagnostica qualità sensore - SISTEMA ANTI-BLOCCO POTENZIATO
   uint32_t cycleCount = 0;
   uint32_t poorQualityCount = 0;
   uint32_t lastResetTime = 0;
+  uint32_t totalReadings = 0;  // Contatore totale letture per reset preventivo
   
   while (1) {
-    // Incrementa contatore cicli
+    // Incrementa contatori
     cycleCount++;
+    totalReadings++;
     
     // Yield every 10 cycles per lasciare CPU ad altri task
     if (cycleCount % 10 == 0) {
@@ -273,75 +275,73 @@ void sensorTask(void *pvParameters) {
     
     int16_t deltaY = (int16_t)((readRegister(PMW3901_DELTA_Y_H) << 8) | readRegister(PMW3901_DELTA_Y_L));
     
-    // Verifica qualità sensore ogni 200 cicli (circa ogni 10 secondi - molto meno frequente)
-    if (cycleCount % 200 == 0) {
+    // CONTROLLO ANTI-BLOCCO PIÙ FREQUENTE ogni 40 cicli (circa ogni 2 secondi)
+    if (cycleCount % 40 == 0) {
       uint8_t squal = readRegister(PMW3901_SQUAL);
       uint8_t shutterUpper = readRegister(PMW3901_SHUTTER_UPPER);
       uint8_t shutterLower = readRegister(PMW3901_SHUTTER_LOWER);
       uint8_t rawSum = readRegister(PMW3901_RAW_DATA_SUM);
       
-      // Rileva condizioni di scarsa qualità (più sensibile)
-      bool poorQuality = (squal < 5) ||  // Soglia SQUAL più alta
-                         (rawSum < 2) ||   // Dati raw insufficienti
-                         (shutterUpper == 132 && shutterLower == 3); // Valori bloccati
+      // Rileva condizioni di BLOCCO TOTALE (più aggressivo)
+      bool sensorBlocked = (squal == 0) ||  // SQUAL completamente zero = BLOCCO
+                           (rawSum == 0) ||   // Nessun dato raw = BLOCCO
+                           (shutterUpper == 132 && shutterLower == 3); // Valori fissi = BLOCCO
       
-      if (poorQuality) {
+      if (sensorBlocked) {
         poorQualityCount++;
+        Serial.printf("BLOCCO RILEVATO (tentativo %d): SQUAL=%d, Raw=%d, Shutter=%d/%d\n", 
+                      poorQualityCount, squal, rawSum, shutterUpper, shutterLower);
         
-        // Primo tentativo: ottimizzazione LED (dopo 3 controlli = 1.5 secondi)
-        if (poorQualityCount == 3) {
-          Serial.println("OTTIMIZZAZIONE LED: SQUAL basso rilevato");
+        // RESET IMMEDIATO dopo 3 controlli consecutivi (6 secondi di blocco)
+        if (poorQualityCount >= 3 && (millis() - lastResetTime) > 10000) {
+          Serial.println("RESET SENSORE: Blocco confermato - reset immediato!");
           
-          // Forza LED alla massima potenza
-          writeRegister(PMW3901_LED_BANK, 0x14);
-          delay(5);
-          writeRegister(PMW3901_LED_CONTROL, 0x00);  // LED fissi accesi
-          writeRegister(0x70, 0x00);  // Current massimo
-          delay(5);
-          writeRegister(PMW3901_LED_BANK, 0x00);
-        }
-        
-        // Secondo tentativo: reset leggero (dopo 6 controlli = 3 secondi)
-        else if (poorQualityCount == 6) {
-          Serial.println("RESET LEGGERO: Pulizia buffer");
-          
-          // Pulisce solo i buffer senza reset completo
-          for(int i = 0; i < 10; i++) {
-            readRegister(PMW3901_MOTION);
-            readRegister(PMW3901_DELTA_X_L);
-            readRegister(PMW3901_DELTA_X_H);  
-            readRegister(PMW3901_DELTA_Y_L);
-            readRegister(PMW3901_DELTA_Y_H);
-            delay(5);
-          }
-        }
-        
-        // Terzo tentativo: reset completo (dopo 10 controlli = 5 secondi)
-        else if (poorQualityCount >= 10 && (millis() - lastResetTime) > 15000) {
-          Serial.println("RESET SENSORE: Qualità scarsa rilevata per 10s");
-          
-          // Re-inizializzazione del sensore
+          // Reset completo con power cycle
           writeRegister(0x3A, 0x5A);  // Power up reset
           delay(200);
           
-          // Pulisce buffer
-          for(int i = 0; i < 10; i++) {
-            readRegister(PMW3901_MOTION);
-            readRegister(PMW3901_DELTA_X_L);
-            readRegister(PMW3901_DELTA_X_H);  
-            readRegister(PMW3901_DELTA_Y_L);
-            readRegister(PMW3901_DELTA_Y_H);
-            delay(10);
+          // Ri-inizializzazione completa Bitcraze
+          initPMW3901Registers();
+          delay(100);
+          
+          // Reset accumulatori se overflow
+          if (xSemaphoreTake(registerMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            if (abs(registerX) > 500000 || abs(registerY) > 500000) {
+              Serial.println("RESET ACCUMULATORI: Overflow rilevato");
+              registerX = 0;
+              registerY = 0;
+              encoderPosition = 0;
+            }
+            xSemaphoreGive(registerMutex);
           }
           
           poorQualityCount = 0;
           lastResetTime = millis();
-          Serial.println("Reset sensore completato");
+          Serial.println("Reset sensore completato - ripresa funzionamento");
         }
       } else {
         // Reset contatore se qualità migliora
-        poorQualityCount = 0;
+        if (poorQualityCount > 0) {
+          Serial.println("Qualità sensore ripristinata");
+          poorQualityCount = 0;
+        }
       }
+    }
+    
+    // RESET PREVENTIVO ogni 10,000 letture (~8 minuti a 20Hz)
+    if (totalReadings > 0 && totalReadings % 10000 == 0) {
+      Serial.printf("RESET PREVENTIVO: %d letture completate - manutenzione automatica\n", totalReadings);
+      
+      // Pulizia preventiva buffer
+      for(int i = 0; i < 5; i++) {
+        readRegister(PMW3901_MOTION);
+        readRegister(PMW3901_DELTA_X_L);
+        readRegister(PMW3901_DELTA_X_H);
+        readRegister(PMW3901_DELTA_Y_L);
+        readRegister(PMW3901_DELTA_Y_H);
+        delay(10);
+      }
+      Serial.println("Manutenzione preventiva completata");
     }
     
     // Aggiorna registri se c'è movimento
