@@ -250,9 +250,9 @@ Questo progetto è rilasciato sotto licenza **MIT** - vedi [LICENSE](LICENSE) pe
 ## 👨‍💻 Autore
 
 **Sviluppatore**: [Il Tuo Nome]
-- 📧 Email: [tua-email@example.com]
-- 🐙 GitHub: [@tuo-username](https://github.com/tuo-username)
-- 💼 LinkedIn: [Il Tuo Profilo](https://linkedin.com/in/tuo-profilo)
+- 📧 Email: [mino.m@tecnocons.com]
+- 🐙 GitHub: [@tuo-username](https://github.com/fichetto)
+- 💼 LinkedIn: [Il Tuo Profilo](https://www.linkedin.com/in/cosimo-massimiliano-84126b34/)
 
 ## 🙏 Ringraziamenti
 
