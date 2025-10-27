@@ -49,6 +49,107 @@ SPIClass *spi;
 volatile long registerX = 0;  // Registro cumulativo incrementi X
 volatile long registerY = 0;  // Registro cumulativo incrementi Y
 
+// Filtro outlier - Finestra mobile per rilevamento anomalie
+#define OUTLIER_WINDOW_SIZE 10       // Numero campioni per mediana
+#define OUTLIER_MAD_THRESHOLD 3.0    // Soglia MAD (3 = ~99.7% dei dati normali)
+struct OutlierFilter {
+  int16_t windowX[OUTLIER_WINDOW_SIZE];
+  int16_t windowY[OUTLIER_WINDOW_SIZE];
+  uint8_t windowIndex;
+  uint32_t outlierCountX;
+  uint32_t outlierCountY;
+  uint32_t totalSamples;
+
+  OutlierFilter() : windowIndex(0), outlierCountX(0), outlierCountY(0), totalSamples(0) {
+    memset(windowX, 0, sizeof(windowX));
+    memset(windowY, 0, sizeof(windowY));
+  }
+
+  // Calcola mediana di un array (non modifica l'array originale)
+  int16_t calculateMedian(int16_t* values, uint8_t size) {
+    int16_t sorted[OUTLIER_WINDOW_SIZE];
+    memcpy(sorted, values, size * sizeof(int16_t));
+
+    // Bubble sort semplice (efficiente per array piccoli)
+    for (uint8_t i = 0; i < size - 1; i++) {
+      for (uint8_t j = 0; j < size - i - 1; j++) {
+        if (sorted[j] > sorted[j + 1]) {
+          int16_t temp = sorted[j];
+          sorted[j] = sorted[j + 1];
+          sorted[j + 1] = temp;
+        }
+      }
+    }
+
+    return (size % 2 == 0) ? (sorted[size/2 - 1] + sorted[size/2]) / 2 : sorted[size/2];
+  }
+
+  // Calcola MAD (Median Absolute Deviation)
+  float calculateMAD(int16_t* values, uint8_t size, int16_t median) {
+    int16_t deviations[OUTLIER_WINDOW_SIZE];
+    for (uint8_t i = 0; i < size; i++) {
+      deviations[i] = abs(values[i] - median);
+    }
+    return (float)calculateMedian(deviations, size);
+  }
+
+  // Filtra un campione - restituisce true se valido, false se outlier
+  bool filterSample(int16_t deltaX, int16_t deltaY, int16_t* filteredX, int16_t* filteredY) {
+    totalSamples++;
+
+    // Riempi finestra iniziale senza filtrare (primi campioni)
+    if (totalSamples <= OUTLIER_WINDOW_SIZE) {
+      windowX[windowIndex] = deltaX;
+      windowY[windowIndex] = deltaY;
+      windowIndex = (windowIndex + 1) % OUTLIER_WINDOW_SIZE;
+      *filteredX = deltaX;
+      *filteredY = deltaY;
+      return true;
+    }
+
+    // Calcola mediana e MAD per X
+    int16_t medianX = calculateMedian(windowX, OUTLIER_WINDOW_SIZE);
+    float madX = calculateMAD(windowX, OUTLIER_WINDOW_SIZE, medianX);
+
+    // Calcola mediana e MAD per Y
+    int16_t medianY = calculateMedian(windowY, OUTLIER_WINDOW_SIZE);
+    float madY = calculateMAD(windowY, OUTLIER_WINDOW_SIZE, medianY);
+
+    // Rileva outlier usando soglia MAD
+    bool isOutlierX = (madX > 0) && (abs(deltaX - medianX) > OUTLIER_MAD_THRESHOLD * madX);
+    bool isOutlierY = (madY > 0) && (abs(deltaY - medianY) > OUTLIER_MAD_THRESHOLD * madY);
+
+    // Gestisci outlier
+    if (isOutlierX) {
+      outlierCountX++;
+      *filteredX = medianX;  // Sostituisci con mediana
+    } else {
+      *filteredX = deltaX;
+    }
+
+    if (isOutlierY) {
+      outlierCountY++;
+      *filteredY = medianY;  // Sostituisci con mediana
+    } else {
+      *filteredY = deltaY;
+    }
+
+    // Aggiorna finestra mobile
+    windowX[windowIndex] = *filteredX;
+    windowY[windowIndex] = *filteredY;
+    windowIndex = (windowIndex + 1) % OUTLIER_WINDOW_SIZE;
+
+    return !(isOutlierX || isOutlierY);  // true se nessun outlier rilevato
+  }
+
+  // Statistiche filtro
+  float getOutlierRateX() { return totalSamples > 0 ? (100.0f * outlierCountX / totalSamples) : 0.0f; }
+  float getOutlierRateY() { return totalSamples > 0 ? (100.0f * outlierCountY / totalSamples) : 0.0f; }
+  void resetStats() { outlierCountX = 0; outlierCountY = 0; totalSamples = 0; }
+};
+
+OutlierFilter outlierFilter;
+
 // Sistema encoder AB
 volatile long encoderPosition = 0;  // Posizione encoder in step
 volatile bool encoderA_state = false;
@@ -269,12 +370,25 @@ void sensorTask(void *pvParameters) {
     // Leggi movimento dal sensore
     uint8_t motion = readRegister(PMW3901_MOTION);
     vTaskDelay(pdMS_TO_TICKS(1));  // Piccolo delay tra letture SPI
-    
+
     int16_t deltaX = (int16_t)((readRegister(PMW3901_DELTA_X_H) << 8) | readRegister(PMW3901_DELTA_X_L));
     vTaskDelay(pdMS_TO_TICKS(1));  // Piccolo delay tra letture SPI
-    
+
     int16_t deltaY = (int16_t)((readRegister(PMW3901_DELTA_Y_H) << 8) | readRegister(PMW3901_DELTA_Y_L));
-    
+
+    // FILTRO OUTLIER - Rimuovi spike anomali
+    int16_t filteredX, filteredY;
+    bool isClean = outlierFilter.filterSample(deltaX, deltaY, &filteredX, &filteredY);
+
+    // Log outlier rilevati (solo se significativi)
+    if (!isClean && (abs(deltaX) > 10 || abs(deltaY) > 10)) {
+      Serial.printf("OUTLIER filtrato: dX=%d->%d, dY=%d->%d\n", deltaX, filteredX, deltaY, filteredY);
+    }
+
+    // Usa valori filtrati per il resto dell'elaborazione
+    deltaX = filteredX;
+    deltaY = filteredY;
+
     // CONTROLLO ANTI-BLOCCO PIÙ FREQUENTE ogni 40 cicli (circa ogni 2 secondi)
     if (cycleCount % 40 == 0) {
       uint8_t squal = readRegister(PMW3901_SQUAL);
@@ -405,11 +519,11 @@ void wifiTask(void *pvParameters) {
         currentX = registerX;
         currentY = registerY;
         xSemaphoreGive(registerMutex);
-        
+
         // Leggi solo i parametri essenziali per diagnostica
         uint8_t motion = readRegister(PMW3901_MOTION);
         uint8_t squal = readRegister(PMW3901_SQUAL);
-        
+
         // Output essenziale: accumulatori + qualità + diagnostica
         Serial.print("X: ");
         Serial.print(currentX);
@@ -417,19 +531,19 @@ void wifiTask(void *pvParameters) {
         Serial.print(currentY);
         Serial.print(" | SQUAL: ");
         Serial.print(squal);
-        
+
         // Aggiungi informazioni diagnostiche per debug
         uint8_t rawSum = readRegister(PMW3901_RAW_DATA_SUM);
         uint8_t shutterUpper = readRegister(PMW3901_SHUTTER_UPPER);
         uint8_t shutterLower = readRegister(PMW3901_SHUTTER_LOWER);
-        
+
         Serial.print(" | Raw: ");
         Serial.print(rawSum);
         Serial.print(" | Shutter: ");
         Serial.print(shutterUpper);
         Serial.print("/");
         Serial.print(shutterLower);
-        
+
         // Mostra motion solo se significativo
         if (motion & 0x80) {
           Serial.print(" | Motion: ATTIVO");
@@ -437,7 +551,14 @@ void wifiTask(void *pvParameters) {
           Serial.print(" | Motion: 0x");
           Serial.print(motion, HEX);
         }
-        
+
+        // Statistiche filtro outlier
+        Serial.print(" | Outlier: X=");
+        Serial.print(outlierFilter.getOutlierRateX(), 1);
+        Serial.print("%, Y=");
+        Serial.print(outlierFilter.getOutlierRateY(), 1);
+        Serial.print("%");
+
         Serial.println();
       }
       lastAccumulatorPrint = millis();
@@ -600,7 +721,8 @@ void setupWebServer() {
         <div class="status info">
             <strong>Distanza attuale:</strong> <span id="currentDistance">)" + String(calibration.getDistance(), 1) + R"( mm</span><br>
             <strong>Fattore scala X:</strong> <span id="scaleX">)" + String(calibration.getScaleX(), 4) + R"(</span><br>
-            <strong>Fattore scala Y:</strong> <span id="scaleY">)" + String(calibration.getScaleY(), 4) + R"(</span>
+            <strong>Fattore scala Y:</strong> <span id="scaleY">)" + String(calibration.getScaleY(), 4) + R"(</span><br>
+            <strong>Filtro Outlier:</strong> X=)" + String(outlierFilter.getOutlierRateX(), 1) + R"(% | Y=)" + String(outlierFilter.getOutlierRateY(), 1) + R"(%</span>
         </div>
         
         <form action="/calibrate" method="POST">
@@ -622,7 +744,8 @@ void setupWebServer() {
         </div>
         
         <div style="margin-top: 20px;">
-            <button onclick="window.location.href='/reset'" style="background: #dc3545;">Reset Registri</button>
+            <button onclick="window.location.href='/reset'" style="background: #dc3545; margin-right: 10px;">Reset Registri</button>
+            <button onclick="window.location.href='/reset-stats'" style="background: #ffc107;">Reset Statistiche Filtro</button>
         </div>
     </div>
 </body>
@@ -685,6 +808,18 @@ void setupWebServer() {
     String response = "<html><head><meta http-equiv='refresh' content='2; url=/'></head>";
     response += "<body><h2>LED PMW3901 SPENTI!</h2>";
     response += "<p>I LED integrati sulla breakout board sono ora disattivi.</p>";
+    response += "<p>Reindirizzamento automatico alla home in 2 secondi...</p>";
+    response += "<a href='/'>← Torna subito alla home</a></body></html>";
+    server.send(200, "text/html", response);
+  });
+
+  // Endpoint per reset statistiche filtro outlier
+  server.on("/reset-stats", [](){
+    lastWiFiActivity = millis();  // Aggiorna attività
+    outlierFilter.resetStats();
+    String response = "<html><head><meta http-equiv='refresh' content='2; url=/'></head>";
+    response += "<body><h2>Statistiche filtro resettate!</h2>";
+    response += "<p>I contatori degli outlier sono stati azzerati.</p>";
     response += "<p>Reindirizzamento automatico alla home in 2 secondi...</p>";
     response += "<a href='/'>← Torna subito alla home</a></body></html>";
     server.send(200, "text/html", response);
