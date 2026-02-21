@@ -1,273 +1,203 @@
 # 🔄 ESP32-S3 Optical Encoder AB
 
-Un encoder ottico digitale basato su ESP32-S3 e sensore PMW3901, con interfaccia WiFi per calibrazione e monitoraggio in tempo reale.
+Encoder ottico digitale basato su **ESP32-S3** e sensore **PMW3901**, con lettura contatori X/Y via **Modbus RTU** su USB e interfaccia WiFi per calibrazione.
 
 ![ESP32-S3](https://img.shields.io/badge/ESP32--S3-Dual%20Core-blue)
 ![PlatformIO](https://img.shields.io/badge/PlatformIO-Arduino%20Framework-orange)
+![Modbus RTU](https://img.shields.io/badge/Modbus-RTU%20Slave-purple)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Status](https://img.shields.io/badge/Status-Working-brightgreen)
 
 ## 📋 Descrizione
 
-Questo progetto implementa un **encoder ottico ad alta precisione** utilizzando il sensore PMW3901 (Pimoroni) su una scheda ESP32-S3-Nano Waveshare. Il sistema simula i classici segnali A e B di un encoder incrementale, con interfaccia web per calibrazione e monitoraggio.
+Il sistema legge il flusso ottico dal sensore PMW3901 (100 Hz) e accumula i contatori X/Y. I dati sono accessibili via **Modbus RTU** attraverso la porta USB nativa dell'ESP32-S3, senza driver aggiuntivi. È inclusa un'applicazione Python desktop per il monitoraggio in tempo reale.
 
 ### ✨ Caratteristiche Principali
 
-- 🎯 **Alta Precisione**: Tracking ottico fino a 7000 FPS
-- 🔄 **Segnali A/B**: Simulazione encoder incrementale classico
-- 📡 **WiFi Integrato**: Access Point per calibrazione remota  
-- 🎨 **Feedback LED**: Visualizzazione stato tramite LED rosso integrato
-- ⚡ **Dual Core**: Task separati per sensore e WiFi
-- 🔧 **Auto-tuning**: Ottimizzazione automatica qualità segnale (SQUAL)
-- 📊 **Monitoraggio Real-time**: SQUAL, DX/DY, posizione encoder
+- 📦 **Modbus RTU Slave** — lettura contatori X/Y + SQUAL via USB CDC (TinyUSB)
+- 🖥️ **Desktop App Python** — GUI tkinter con grafico in tempo reale
+- ⚡ **100 Hz** — frequenza di campionamento del sensore
+- 🔄 **Segnali A/B** — simulazione encoder incrementale su GPIO 2/3
+- 📡 **WiFi AP** — pagina web per calibrazione distanza sensore
+- 🎨 **LED RGB** — stato encoder visualizzato sul LED WS2812 integrato
+- 🧮 **Filtro outlier MAD** — rimozione automatica picchi di rumore
+- ⚙️ **Dual Core FreeRTOS** — sensorTask (Core 0) + wifiTask + Modbus (Core 1)
 
-## 🛠️ Hardware Richiesto
+## 🛠️ Hardware
 
-### Componenti Principali
-- **ESP32-S3-Nano Waveshare** - Microcontrollore dual-core
-- **PMW3901 Breakout (Pimoroni)** - Sensore ottico flow
-- **Cavi jumper** - Per collegamenti SPI
+### Componenti
+| Componente | Modello |
+|---|---|
+| Microcontrollore | ESP32-S3-DevKitC-1 (8 MB Flash) |
+| Sensore ottico | PMW3901 Breakout (Pimoroni / Bitcraze) |
 
-### Pinout SPI
+### Pinout SPI (HSPI)
 ```
 ESP32-S3    →    PMW3901
+GPIO 11     →    CS   (Chip Select)
 GPIO 12     →    SCK  (Clock)
-GPIO 11     →    MOSI (Data Out) 
-GPIO 13     →    MISO (Data In)
-GPIO 10     →    CS   (Chip Select)
+GPIO 13     →    MOSI (Data Out)
+GPIO 14     →    MISO (Data In)
 3.3V        →    VCC
 GND         →    GND
 ```
 
-### LED Integrati
-- **LED Rosso Scheda**: GPIO 48 - Indica attività encoder
-- **LED PMW3901**: Controllabili via web interface
+### Pin Encoder AB Output
+```
+GPIO 2  →  Segnale A
+GPIO 3  →  Segnale B
+GPIO 48 →  LED RGB WS2812 (stato)
+```
 
-## 🚀 Installazione
+## 🚀 Installazione Firmware
 
-### 1. Setup PlatformIO
+### Requisiti
+- [PlatformIO](https://platformio.org/) (VS Code extension o CLI)
+- Python 3.x + `pip install pyserial`
+
+### Build & Upload
 ```bash
-# Clona il repository
-git clone https://github.com/[YOUR_USERNAME]/ESP32-S3-Optical-Encoder-AB.git
-cd ESP32-S3-Optical-Encoder-AB
+git clone https://github.com/fichetto/Optical-Encoder-AB.git
+cd Optical-Encoder-AB
 
-# Compila il progetto
+# Compila
 pio run
 
-# Carica sulla scheda
+# Carica (auto-reset via USB — non serve premere BOOT)
 pio run -t upload
-
-# Monitor seriale
-pio device monitor
 ```
 
-### 2. Dipendenze Automatiche
-Il file `platformio.ini` installa automaticamente:
-- `Adafruit NeoPixel` - Controllo LED
-- `WiFi` - Networking ESP32
-- `WebServer` - Server HTTP integrato
+> **Nota USB**: Il firmware usa **TinyUSB CDC** (`ARDUINO_USB_MODE=0`).
+> L'upload avviene in auto-reset senza premere il pulsante BOOT.
+> Dopo il primo avvio la porta può cambiare numero (es. da COM8 a COM10).
 
-## 📡 Utilizzo
+### Dipendenze (installate automaticamente)
+- `Adafruit NeoPixel` — LED WS2812
+- `ArduinoJson` — parsing JSON per WiFi API
 
-### 1. Prima Connessione
-1. **Alimenta la scheda** - Il LED rosso dovrebbe rimanere spento
-2. **Connetti al WiFi**: 
-   - SSID: `ESP32-Optical-Encoder`
-   - Password: `encoder123`
-3. **Apri browser**: http://192.168.4.1
+## 💻 Desktop App Python
 
-### 2. Interfaccia Web
-
-#### Pagina Principale
-```
-📊 ESP32 Optical Encoder Monitor
-├── Status Sensore: ✅ Attivo
-├── SQUAL Quality: 85 (Ottimo: >40)
-├── Movimento: DX=+5, DY=-2
-├── Posizione Encoder: 1250 passi
-└── [Pulsanti controllo LED]
+```bash
+python encoder_reader.py
 ```
 
-#### Calibrazione
-1. **Misura distanza nota** (es. righello da 10cm)  
-2. **Muovi il sensore** sulla distanza misurata
-3. **Inserisci valore** nella pagina di calibrazione
-4. **Sistema calcola** automaticamente pixel/mm
+**Funzionalità:**
+- Selezione porta COM, baud rate e frequenza di polling
+- Visualizzazione contatori X/Y (pixel) e SQUAL in tempo reale
+- Grafico scorrevole X/Y
+- Pulsante **Reset X/Y** — azzera i contatori sull'ESP32
+- Pulsante **Segna Riferimento** — zero locale senza reset hardware
+- Pulsante **LED** — accende/spegne i LED del sensore PMW3901
+- Scorciatoie: `R` = reset, `L` = LED, `Q` = esci
 
-### 3. Monitoraggio Seriale
-```
-Movimento rilevato: DX=+3, DY=-1, SQUAL=67
-Encoder A: HIGH, B: LOW → Posizione: +1245
-LED: Attivo (movimento rilevato)
+## 📡 Protocollo Modbus RTU
+
+**Slave ID**: 1 — **Porta**: USB CDC (TinyUSB) — **Baud**: 921600 (virtuale, velocità reale = USB FS)
+
+### Registri in Lettura — FC 03 / FC 04
+
+| Registro | Nome | Tipo | Descrizione |
+|---|---|---|---|
+| 0x0000 | X\_HIGH | int16 | Bit 31-16 del contatore X |
+| 0x0001 | X\_LOW | uint16 | Bit 15-0 del contatore X |
+| 0x0002 | Y\_HIGH | int16 | Bit 31-16 del contatore Y |
+| 0x0003 | Y\_LOW | uint16 | Bit 15-0 del contatore Y |
+| 0x0004 | SQUAL | uint16 | Surface Quality (0–255) |
+| 0x0005 | ENC\_HIGH | int16 | Bit 31-16 posizione encoder AB |
+| 0x0006 | ENC\_LOW | uint16 | Bit 15-0 posizione encoder AB |
+
+**Ricostruzione int32 in Python:**
+```python
+import struct
+x = struct.unpack('>i', struct.pack('>HH', x_high, x_low))[0]
 ```
 
-## ⚙️ Configurazione Avanzata
+### Comandi in Scrittura — FC 06
 
-### Soglie di Movimento
-```cpp
-#define ENCODER_THRESHOLD    2     // Soglia minima movimento (pixel)
-#define SQUAL_GOOD_THRESHOLD 40    // SQUAL minimo accettabile
+| Registro | Valore | Effetto |
+|---|---|---|
+| 0x0010 | 0x0001 | Reset contatori X, Y, encoder |
+| 0x0011 | 0x0001 | LED PMW3901 ON |
+| 0x0011 | 0x0000 | LED PMW3901 OFF |
+
+### Esempio Python Minimale
+```python
+import serial, struct
+
+def crc16(data):
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
+    return crc
+
+ser = serial.Serial('COM10', 921600, timeout=1.0)
+
+# Leggi 5 registri (X_H, X_L, Y_H, Y_L, SQUAL)
+req = struct.pack('>BBHH', 1, 0x04, 0, 5)
+req += struct.pack('<H', crc16(req))
+ser.write(req)
+raw = ser.read(15)   # 3 header + 10 dati + 2 CRC
+
+regs = [struct.unpack_from('>H', raw, 3 + i*2)[0] for i in range(5)]
+x = struct.unpack('>i', struct.pack('>HH', regs[0], regs[1]))[0]
+y = struct.unpack('>i', struct.pack('>HH', regs[2], regs[3]))[0]
+print(f"X={x}  Y={y}  SQUAL={regs[4]}")
 ```
+
+## 📡 Calibrazione via WiFi
+
+Dopo 5 secondi dal boot, l'ESP32 avvia un Access Point:
+
+| Parametro | Valore |
+|---|---|
+| SSID | `EncoderCalibration` |
+| Password | `12345678` |
+| URL | http://192.168.4.1 |
+
+Dalla pagina web è possibile impostare la distanza sensore-superficie e controllare i LED. L'AP si spegne automaticamente dopo 3 minuti di inattività.
+
+## ⚙️ Configurazione
 
 ### Task FreeRTOS
-```cpp
-// Core 0: Sensore PMW3901 (20Hz)
-sensorTask (Stack: 8192, Priority: 1)
-
-// Core 1: WiFi + Web Server (10Hz)  
-wifiTask (Stack: 16384, Priority: 1)
 ```
-
-### Watchdog Timer
-```cpp
-CONFIG_ESP_TASK_WDT_TIMEOUT_S=10    // Timeout 10 secondi
-CONFIG_ESP_TASK_WDT_PANIC=y         // Panic on timeout
-```
-
-## 🧪 Testing & Debug
-
-### Test Funzionale LED
-```cpp
-// All'avvio - Test visivo LED
-rgb_led.clear();        // LED spento ✅
-rgb_led.show();
-Serial.println("LED RGB encoder pronto (spento)!");
+Core 0 — sensorTask  (priority 2, stack 8192)  → lettura PMW3901 @ 100 Hz
+Core 1 — wifiTask    (priority 1, stack 16384) → Modbus RTU + WiFi AP
 ```
 
 ### Qualità Segnale SQUAL
-- **SQUAL > 80**: 🟢 Eccellente
-- **SQUAL 40-80**: 🟡 Buono  
-- **SQUAL < 40**: 🔴 Scarso (auto-ottimizzazione)
-
-### Diagnostica Problemi
-```bash
-# Monitor debug completo
-pio device monitor --baud 115200
-
-# Verifica memoria
-ESP.getFreeHeap()     # RAM disponibile
-ESP.getFlashChipSize() # Flash size
-```
-
-## 📚 API Reference
-
-### Funzioni Principali
-```cpp
-// Inizializzazione
-void initPMW3901Registers();  // Setup sensore Bitcraze
-void initPMW3901LEDs();       // LED sensore
-
-// Lettura Sensore  
-MotionData readPMW3901();     // Legge DX, DY, SQUAL
-void updateEncoderPosition(); // Calcola segnali A/B
-
-// LED Control
-void updateRGBLED(bool A, bool B);  // Feedback visivo
-void setPMW3901LEDs(bool enable);   // LED sensore
-```
-
-### Endpoint Web API
-```http
-GET  /                 → Dashboard principale
-POST /calibrate       → Salva calibrazione  
-GET  /led-on          → Accendi LED sensore
-GET  /led-off         → Spegni LED sensore
-GET  /reset           → Reset registri posizione
-```
+| SQUAL | Giudizio |
+|---|---|
+| ≥ 80 | Eccellente |
+| 40–79 | Buono |
+| < 40 | Scarso (auto-reinizializzazione) |
 
 ## 🔧 Troubleshooting
 
-### Problemi Comuni
+**Porta COM non trovata dopo upload**
+Il TinyUSB CDC può assegnare un numero di porta diverso dall'HWCDC originale. Clicca ⟳ nell'app per aggiornare la lista.
 
-#### SQUAL Basso (< 40)
-```cpp
-// Auto-ottimizzazione attiva:
-1. Controllo LED massima potenza
-2. Reset buffer sensore  
-3. Re-inizializzazione completa
-```
+**SQUAL basso / nessun movimento rilevato**
+Il sensore necessita di una superficie texturizzata a una distanza minima di ~80 mm.
 
-#### Reset MCU Continui
-```cpp
-// Soluzioni implementate:
-- Stack size aumentati (8192/16384)
-- Task frequency ridotte (20Hz/10Hz)  
-- Watchdog timeout 10s
-- taskYIELD() per context switch
-```
+**LED PMW3901 spenti**
+Invia `FC06 reg=0x0011 val=0x0001` via Modbus o usa il pulsante LED nell'app.
 
-#### LED Non Funzionante
-```cpp
-// Verifica pinout:
-#define RGB_LED_PIN 48  // Standard ESP32-S3
-// Alternative: GPIO 38, GPIO 21
-```
-
-#### Connessione WiFi
-```bash
-# Verifica Access Point:
-SSID: ESP32-Optical-Encoder
-IP: 192.168.4.1
-Gateway: 192.168.4.1
-```
-
-## 📈 Performance
-
-### Specifiche Tecniche
-- **Risoluzione**: 30x30 pixel array
-- **Frame Rate**: Fino a 7000 FPS  
-- **Range Velocità**: 0.3 - 7.2 m/s
-- **Precisione**: ±1 pixel
-- **Latenza**: < 50ms end-to-end
-
-### Benchmarks Testati
-```
-✅ Tracking: Eccellente (SQUAL 50-123)
-✅ Stabilità: Nessun reset in 24h
-✅ Responsività Web: < 200ms  
-✅ Memory Usage: 45% RAM, 32% Flash
-✅ Task Switching: < 1ms
-```
-
-## 🤝 Contribuire
-
-1. **Fork** il repository
-2. **Crea branch** feature (`git checkout -b feature/amazing-feature`)
-3. **Commit** modifiche (`git commit -m 'Add amazing feature'`)
-4. **Push** al branch (`git push origin feature/amazing-feature`)
-5. **Apri Pull Request**
-
-### Coding Standards
-- Commenti in italiano per logica business
-- Variabili in camelCase
-- Costanti in UPPER_CASE
-- Indentazione 2 spazi
+**Upload fallisce**
+Con TinyUSB l'auto-reset funziona senza BOOT. Se non funzionasse, tenere premuto BOOT e premere RESET prima di `pio run -t upload`.
 
 ## 📄 Licenza
 
-Questo progetto è rilasciato sotto licenza **MIT** - vedi [LICENSE](LICENSE) per dettagli.
+MIT — vedi [LICENSE](LICENSE)
 
 ## 👨‍💻 Autore
 
-**Sviluppatore**: [Il Tuo Nome]
-- 📧 Email: [mino.m@tecnocons.com]
-- 🐙 GitHub: [@tuo-username](https://github.com/fichetto)
-- 💼 LinkedIn: [Il Tuo Profilo](https://www.linkedin.com/in/cosimo-massimiliano-84126b34/)
+- 📧 [mino.m@tecnocons.com](mailto:mino.m@tecnocons.com)
+- 🐙 [@fichetto](https://github.com/fichetto)
+- 💼 [LinkedIn](https://www.linkedin.com/in/cosimo-massimiliano-84126b34/)
 
 ## 🙏 Ringraziamenti
 
-- **Pimoroni** per il fantastico breakout PMW3901
-- **Bitcraze** per la sequenza di inizializzazione del sensore
-- **Waveshare** per la scheda ESP32-S3-Nano
-- **Espressif** per l'eccellente framework Arduino-ESP32
-
-## 📚 Riferimenti
-
-- [PMW3901 Datasheet](https://www.pixart.com/products-detail/10/PMW3901MB-TXQT)
-- [ESP32-S3 Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/)
-- [Pimoroni PMW3901 Guide](https://shop.pimoroni.com/products/pmw3901-optical-flow-sensor-breakout)
-- [Waveshare ESP32-S3-Nano](https://www.waveshare.com/wiki/ESP32-S3-Nano)
-
----
-
-⭐ **Se questo progetto ti è stato utile, lascia una stella!** ⭐
+- **Pimoroni / Bitcraze** — breakout PMW3901 e sequenza di inizializzazione
+- **Espressif** — framework Arduino-ESP32 e TinyUSB
